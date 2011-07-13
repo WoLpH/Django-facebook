@@ -335,69 +335,100 @@ class FacebookAPI(GraphAPI):
         from django.template.defaultfilters import slugify
         return slugify(username).replace('-', '_')
     
-    def store_likes(self, user, limit=1000, store=facebook_settings.FACEBOOK_STORE_LIKES):
-        from django_facebook.models import FacebookLike
+    
+    
+    def get_likes(self, limit=1000):
+        '''
+        Parses the facebook response and returns the likes
+        '''
         likes_response = self.get_connections('me', 'likes', limit=limit)
         likes = likes_response and likes_response.get('data')
-        logger.info('found %s likes' % len(likes))
+        logger.info('found %s likes', len(likes))
+        return likes
         
-        if likes and store:
-            logger.info('storing likes to db')
-            base_queryset = FacebookLike.objects.filter(user=user)
-            base_queryset.all().delete()
-            global_defaults = dict(user=user)
+    def store_likes(self, user, likes):
+        '''
+        Given a user and likes store these in the db
+        Note this can be a heavy operation, best to do it in the background using celery
+        '''
+        if facebook_settings.FACEBOOK_CELERY_STORE:
+            from django_facebook.tasks import store_likes
+            store_likes(user, likes)
+        else:
+            self._store_likes(user, likes)
+        
+    @classmethod
+    def _store_likes(self, user, likes):
+        if likes:
+            from django_facebook.models import FacebookLike
+            base_queryset = FacebookLike.objects.filter(user_id=user.id)
+            global_defaults = dict(user_id=user.id)
             id_field = 'facebook_id'
             default_dict = {}
             for like in likes:
-                created_time = datetime.datetime.strptime(like['created_time'], "%Y-%m-%dT%H:%M:%S+0000")
+                name = like.get('name')
+                created_time_string = like.get('created_time')
+                created_time = None
+                if created_time_string:
+                    created_time = datetime.datetime.strptime(like['created_time'], "%Y-%m-%dT%H:%M:%S+0000")
                 default_dict[like['id']] = dict(
-                    created_time = created_time,
-                    category = like['category'],
-                    name=like['name']
+                    created_time=created_time,
+                    category=like.get('category'),
+                    name=name
                 )
             current_likes, inserted_likes = mass_get_or_create(
                 FacebookLike, base_queryset, id_field, default_dict, global_defaults
             )
             logger.debug('found %s likes and inserted %s new likes', len(current_likes), len(inserted_likes))
                
-                
-                
-        
         return likes
     
-    def store_friends(self, user, limit=1000, store=facebook_settings.FACEBOOK_STORE_FRIENDS):
+    def get_friends(self, limit=1000):
         '''
-        Sends a request to the facebook api to retrieve a users friends and stores them locally
+        Connects to the facebook api and gets the users friends
         '''
-        return []
-        
-        from django_facebook.models import FacebookUser
-        
-        #get the users friends
         friends = getattr(self, '_friends', None)
         if friends is None:
             friends_response = self.get_connections('me', 'friends', limit=limit)
             friends = friends_response and friends_response.get('data')
-            logger.info('found %s friends' % len(friends))
-            
-            #store the users for later retrieval
-            if store and friends:
-                logger.info('storing friends to db')
-                #see which ids this user already stored
-                base_queryset = FacebookUser.objects.filter(user=user)
-                global_defaults = dict(user=user)
-                default_dict = {}
-                for f in friends:
-                    default_dict[f['id']] = dict(name=f['name'])
-                id_field = 'facebook_id'
-
-                current_friends, inserted_friends = mass_get_or_create(
-                    FacebookUser, base_queryset, id_field, default_dict, global_defaults
-                )
-                logger.debug('found %s friends and inserted %s new ones', len(current_friends), len(inserted_friends))
-                    
+        
+        logger.info('found %s friends', len(friends))
         
         return friends
+    
+    def store_friends(self, user, friends):
+        '''
+        Stores the given friends locally for this user
+        Quite slow, better do this using celery on a secondary db
+        '''
+        if facebook_settings.FACEBOOK_CELERY_STORE:
+            from django_facebook.tasks import store_friends
+            store_friends(user, friends)
+        else:
+            self._store_friends(user, friends)
+        
+    @classmethod
+    def _store_friends(self, user, friends):
+        from django_facebook.models import FacebookUser
+        #store the users for later retrieval
+        if friends:
+            #see which ids this user already stored
+            base_queryset = FacebookUser.objects.filter(user_id=user.id)
+            global_defaults = dict(user_id=user.id)
+            default_dict = {}
+            for f in friends:
+                name = f.get('name')
+                default_dict[f['id']] = dict(name=name)
+            id_field = 'facebook_id'
+
+            current_friends, inserted_friends = mass_get_or_create(
+                FacebookUser, base_queryset, id_field, default_dict, global_defaults
+            )
+            logger.debug('found %s friends and inserted %s new ones', len(current_friends), len(inserted_friends))
+                    
+        return friends
+    
+    
     
     def registered_friends(self, user):
         '''
@@ -416,7 +447,7 @@ class FacebookAPI(GraphAPI):
             new_friends = [f for f in friends if f['id'] not in registered_ids]
         else:
             new_friends = []
-            friend_objects = []
+            friend_objects = profile_class.objects.none()
             
         return friend_objects, new_friends
     

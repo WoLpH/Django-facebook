@@ -127,17 +127,16 @@ setup(
     license = license_text,
     packages=find_packages(),
     package_data=package_data,
+# This should probably move to some docs directory if they should be readable
+# from the setup.py, this way they are copied to your current working
+# directory which breaks the install sandbox
 #    data_files=[('', ['LICENSE.txt',
 #                      'README.rest'])],
     description = DESCRIPTION,
     long_description=long_description,
-    classifiers = CLASSIFIERS,
-    install_requires=[
-#        'Django>=1.2',
-    ]
+    classifiers = CLASSIFIERS
 #    tests_require=[
 #        'django',
-#        'dingus',
 #    ],
 #    test_suite='django_facebook.runtests.runtests',
 )
